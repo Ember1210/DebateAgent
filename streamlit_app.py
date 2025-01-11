@@ -15,11 +15,21 @@ import random
 st.set_page_config(layout = "wide")
 
 DEFAULT_JUDGE="You are an expert Judge of debates. Review the topic, AFF and NEG case below and delivery your verdict, with explanation."
+DEFAULT_JUDGE2 = """
+You are an expert judge of debates. Review the topic and the AFF case. Rate the strength of the AFF case as a number between 1 and 10 and return it as a parameter 'score'.
+Also return the justification of your score, mentioning the value of the score you gave, as a parameter called 'response'. If score is 8 or higher, then the response should also declare Aff's victory.
+Return the parameters combined as a JSON object.
+
+"""
+
 DEFAULT_AFF="You are an expert debater. Create a strong AFF case for the topic below."
 DEFAULT_NEG="You are an expert debater. Create a strong NEG case for the topic below."
 
 if "Judge" not in st.session_state:
    st.session_state['Judge']=DEFAULT_JUDGE
+
+if "Judge2" not in st.session_state:
+   st.session_state['Judge2']=DEFAULT_JUDGE2
 
 if "Aff" not in st.session_state:
    st.session_state['Aff']=DEFAULT_AFF
@@ -34,6 +44,10 @@ def createLLMMessage(prompt: str, messages: List):
     results.append(HumanMessage(msg))
   return results
 
+class ScoreResponse(BaseModel):
+   score: int
+   response: str
+
 class AgentState(TypedDict):
   agent: str
   affCase: str
@@ -46,6 +60,7 @@ class AgentState(TypedDict):
   aff_pr: str
   neg_pr: str
   judge_pr: str
+  judge_pr2: str
 
 class debateAgent:
   def __init__(self):
@@ -67,7 +82,7 @@ class debateAgent:
       return 'Aff'
     if (current_step == "NegOpen"):
       return 'Neg'
-    if (current_step == "Judgement"):
+    if (current_step == "Judgement" or current_step == "AffJudge"):
       return 'Judge'
     return END
 
@@ -78,6 +93,19 @@ class debateAgent:
       topic = state['topic']
       next_step = "AffOpen"
       return {"output": "Judge selected topic: " + topic, "debateTopic": topic, "step": next_step}
+    elif current_step == "AffJudge":
+      topic = state["debateTopic"]
+      affCase = state["affCase"]
+      pr = state["judge_pr2"]
+      messageToLM = createLLMMessage(pr, [f"topic: {topic}", f"Aff Case: {affCase}"])
+      responseFromLM = self.model.with_structured_output(ScoreResponse).invoke(messageToLM)
+      if (responseFromLM.score >= 8):
+         next_step = "Complete"
+         return {'output': responseFromLM.response, 'step': next_step, 'judging': responseFromLM.response}
+      else:
+         next_step = "NegOpen"
+         return {'output': responseFromLM.response, 'step': next_step}
+      
     else:
       next_step = END
       topic = state["debateTopic"]
@@ -97,7 +125,7 @@ class debateAgent:
     pr = state["aff_pr"]
     if (current_step == "AffOpen"):
       argument = f"Affirmative Case for {topic}"
-      next_step = "NegOpen"
+      next_step = "AffJudge"
       messageToLM = createLLMMessage(pr, [f"topic: {topic}"])
       responseFromLM = self.model.invoke(messageToLM)
       resp = responseFromLM.content
@@ -120,12 +148,14 @@ st_topic=st.empty()
 
 with st.sidebar:
    judge_pr=st.text_area("Judge",value=st.session_state['Judge'])
+   judge_pr2 = st.text_area("Judge2",value=st.session_state['Judge2'])
    aff_pr=st.text_area("Aff",value=st.session_state['Aff'])
    neg_pr=st.text_area("Neg",value=st.session_state['Neg'])
    st.session_state['Judge']=judge_pr
+   st.session_state['Judge2']=judge_pr2
    st.session_state['Aff']=aff_pr
    st.session_state['Neg']=neg_pr
-
+   
 col1,col2,col3=st.columns(3, border=True)
 col1.header("Judge")
 col1msg=col1.empty()
@@ -139,7 +169,7 @@ if topic:
   thread_id=random.randint(1000, 9999)
   thread={"configurable":{"thread_id":thread_id}}
   
-  for s in app.graph.stream({'step': "topic","topic":topic,"judge_pr":judge_pr, "aff_pr":aff_pr, "neg_pr":neg_pr}, thread):
+  for s in app.graph.stream({'step': "topic","topic":topic,"judge_pr":judge_pr, "judge_pr2":judge_pr2, "aff_pr":aff_pr, "neg_pr":neg_pr}, thread):
     print(f"DEBUG {s=}")
     #for k,v in s.items():
     #    if resp := v.get("output"):
